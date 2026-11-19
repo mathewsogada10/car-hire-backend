@@ -1,0 +1,77 @@
+name: carhire
+
+services:
+  db:
+    image: carhire/postgres:${CARHIRE_IMAGE_TAG:-0.1.0}
+    pull_policy: never
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      POSTGRES_DB: carhire
+      POSTGRES_USER: carhire
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_password
+    secrets:
+      - database_password
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carhire -d carhire"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    image: carhire/backend:${CARHIRE_IMAGE_TAG:-0.1.0}
+    pull_policy: never
+    restart: unless-stopped
+    mem_limit: 1g
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 45s
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/carhire
+      DATABASE_USER: carhire
+      SPRING_CONFIG_IMPORT: configtree:/run/secrets/
+      SERVER_ADDRESS: 0.0.0.0
+      OWNER_USERNAME: ${OWNER_USERNAME:-owner}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ATTACHMENT_STORAGE: /app/storage
+    secrets:
+      - source: database_password
+        target: spring.datasource.password
+      - source: owner_password
+        target: carhire.password
+    volumes:
+      - attachments:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    image: carhire/web:${CARHIRE_IMAGE_TAG:-0.1.0}
+    pull_policy: never
+    restart: unless-stopped
+    mem_limit: 128m
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+secrets:
+  database_password:
+    file: ./secrets/database-password
+  owner_password:
+    file: ./secrets/owner-password
+
+volumes:
+  database:
+  attachments:
