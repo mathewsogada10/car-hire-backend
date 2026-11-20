@@ -98,10 +98,14 @@ public class RecordRepository {
             db.queryForObject("SELECT count(*) FROM records" + where, Long.class, args.toArray()));
     args.add(size);
     args.add((long) page * size);
+    String order =
+        kind.equals("hires")
+            ? " ORDER BY (data->>'plannedStart')::timestamptz,id"
+            : " ORDER BY updated_at DESC,id";
     return Map.of(
         "items",
         db.query(
-            "SELECT * FROM records" + where + " ORDER BY updated_at DESC,id LIMIT ? OFFSET ?",
+            "SELECT * FROM records" + where + order + " LIMIT ? OFFSET ?",
             this::map,
             args.toArray()),
         "total",

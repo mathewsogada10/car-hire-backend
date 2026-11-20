@@ -185,6 +185,57 @@ class ApplicationTest {
   }
 
   @Test
+  void hirePagesAreChronologicalBeforePaginationAndDefinedStatusFiltersCombineWithDates()
+      throws Exception {
+    String marker = "hire-filter-" + UUID.randomUUID();
+    var rows = new ArrayList<Row>();
+    for (String status : List.of("Draft", "Booked", "Active", "Completed", "Cancelled")) {
+      int day = 5 - rows.size();
+      var d =
+          hire(
+              vehicle(),
+              status,
+              "2014-01-0" + day + "T10:00:00Z",
+              "2014-01-0" + (day + 1) + "T10:00:00Z");
+      d.put("notes", marker);
+      rows.add(create("hires", d));
+    }
+    rows.sort(
+        Comparator.comparing((Row row) -> Instant.parse(row.data().path("plannedStart").asText()))
+            .thenComparing(row -> row.id().toString()));
+    for (int page = 0; page < 3; page++) {
+      var result =
+          mvc.perform(
+                  get("/api/v1/records/hires")
+                      .with(user("owner").roles("OWNER"))
+                      .param("q", marker)
+                      .param("size", "2")
+                      .param("page", String.valueOf(page)))
+              .andExpect(status().isOk())
+              .andExpect(jsonPath("$.total").value(5))
+              .andExpect(jsonPath("$.items.length()").value(Math.min(2, 5 - page * 2)));
+      for (int item = 0; item < Math.min(2, 5 - page * 2); item++) {
+        result.andExpect(
+            jsonPath("$.items[" + item + "].id").value(rows.get(page * 2 + item).id().toString()));
+      }
+    }
+    for (Row row : rows) {
+      String status = row.data().path("status").asText();
+      mvc.perform(
+              get("/api/v1/records/hires")
+                  .with(user("owner").roles("OWNER"))
+                  .param("q", marker)
+                  .param("status", status)
+                  .param("from", "2014-01-01")
+                  .param("to", "2014-01-05"))
+          .andExpect(status().isOk())
+          .andExpect(jsonPath("$.total").value(1))
+          .andExpect(jsonPath("$.items[0].id").value(row.id().toString()))
+          .andExpect(jsonPath("$.items[0].data.status").value(status));
+    }
+  }
+
+  @Test
   void adjacentBookingsAllowedAndOverlapsRejected() {
     UUID v = vehicle();
     create("hires", hire(v, "Booked", "2027-01-01T00:00:00Z", "2027-01-03T00:00:00Z"));
