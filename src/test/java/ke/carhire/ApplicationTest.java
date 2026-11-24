@@ -90,6 +90,26 @@ class ApplicationTest {
     return (ObjectNode) json.read(value);
   }
 
+  @Test
+  void monthlyFinancialApiRequiresLoginAndReturnsEveryMonthOfAFinancialYear() throws Exception {
+    UUID v = vehicle();
+    mvc.perform(
+            get("/api/v1/reports/monthly").param("from", "2025-07-01").param("to", "2026-06-30"))
+        .andExpect(status().isUnauthorized());
+    mvc.perform(
+            get("/api/v1/reports/monthly")
+                .with(user("owner").roles("OWNER"))
+                .param("from", "2025-07-01")
+                .param("to", "2026-06-30")
+                .param("vehicleId", v.toString()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.currency").value("KES"))
+        .andExpect(jsonPath("$.months.length()").value(12))
+        .andExpect(jsonPath("$.months[0].month").value("2025-07"))
+        .andExpect(jsonPath("$.months[11].month").value("2026-06"))
+        .andExpect(jsonPath("$.months[0].netProfitMinor").value(0));
+  }
+
   Row create(String kind, ObjectNode data) {
     UUID id = UUID.randomUUID();
     return save(id, kind, 0, data);

@@ -10,9 +10,19 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/reports")
 public class ReportController {
   private final ReportService reports;
+  private final MonthlyFinancialService monthly;
 
-  ReportController(ReportService reports) {
+  ReportController(ReportService reports, MonthlyFinancialService monthly) {
     this.reports = reports;
+    this.monthly = monthly;
+  }
+
+  @GetMapping("/monthly")
+  MonthlyFinancialReport monthly(
+      @RequestParam LocalDate from,
+      @RequestParam LocalDate to,
+      @RequestParam(required = false) UUID vehicleId) {
+    return monthly.calculate(from, to, vehicleId);
   }
 
   @GetMapping
