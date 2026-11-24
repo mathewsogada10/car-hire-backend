@@ -92,6 +92,7 @@ public class RecordService {
       if (old != null && old.data().equals(data) && !change.deleted())
         result = Map.of("outcome", "Unchanged", "operationId", change.operationId(), "record", old);
       else {
+        if (change.kind().equals("payments") && !change.deleted()) defaultHireTimes(data);
         var saved = store.save(change.id(), change.kind(), data, old, change.deleted());
         audit.record(
             change.deleted() ? "DELETE" : old == null ? "CREATE" : "UPDATE",
@@ -105,6 +106,25 @@ public class RecordService {
     }
     operations.save(change.operationId(), hash, json.write(result));
     return result;
+  }
+
+  private void defaultHireTimes(ObjectNode payment) {
+    Row hire = store.require(UUID.fromString(payment.path("hireId").asText()), "hires");
+    ObjectNode data = hire.data().deepCopy();
+    for (var field : Map.of("actualStart", "plannedStart", "actualEnd", "plannedEnd").entrySet()) {
+      if (data.path(field.getKey()).asText("").isBlank())
+        data.put(field.getKey(), data.path(field.getValue()).asText());
+    }
+    if (!data.equals(hire.data())) {
+      policy.validate("hires", hire.id(), data, hire);
+      Row updated = store.save(hire.id(), "hires", data, hire, false);
+      audit.record(
+          "DEFAULT_HIRE_TIMES",
+          hire.id(),
+          hire,
+          updated,
+          "Missing actual times defaulted from plan when recording payment");
+    }
   }
 
   @Transactional

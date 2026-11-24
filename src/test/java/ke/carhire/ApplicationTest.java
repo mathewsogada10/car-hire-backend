@@ -214,10 +214,9 @@ class ApplicationTest {
               .andExpect(status().isOk())
               .andExpect(jsonPath("$.total").value(5))
               .andExpect(jsonPath("$.items.length()").value(Math.min(2, 5 - page * 2)));
-      for (int item = 0; item < Math.min(2, 5 - page * 2); item++) {
+      for (int item = 0; item < Math.min(2, 5 - page * 2); item++)
         result.andExpect(
             jsonPath("$.items[" + item + "].id").value(rows.get(page * 2 + item).id().toString()));
-      }
     }
     for (Row row : rows) {
       String status = row.data().path("status").asText();
@@ -232,6 +231,105 @@ class ApplicationTest {
           .andExpect(jsonPath("$.total").value(1))
           .andExpect(jsonPath("$.items[0].id").value(row.id().toString()))
           .andExpect(jsonPath("$.items[0].data.status").value(status));
+    }
+  }
+
+  @Test
+  void paymentDefaultsOnlyMissingHireTimesAtomicallyAndReplayDoesNotChangeTheHireAgain() {
+    var h =
+        create("hires", hire(vehicle(), "Booked", "2016-01-01T10:00:00Z", "2016-01-03T10:00:00Z"));
+    var invalid = payment(h.id(), -1, "Payment");
+    assertThrows(ApiError.class, () -> create("payments", invalid));
+    assertFalse(store.find(h.id()).orElseThrow().data().has("actualStart"));
+    ObjectNode edited = h.data().deepCopy();
+    edited.put("actualStart", "2016-01-01T11:00:00Z");
+    edited.putNull("actualEnd");
+    h = save(h.id(), "hires", h.revision(), edited);
+    var change =
+        new Change(
+            UUID.randomUUID(),
+            UUID.randomUUID(),
+            "payments",
+            0,
+            payment(h.id(), 100, "Payment"),
+            false,
+            null);
+    service.apply(change);
+    var updated = store.find(h.id()).orElseThrow();
+    assertEquals("2016-01-01T11:00:00Z", updated.data().path("actualStart").asText());
+    assertEquals(updated.data().path("plannedEnd"), updated.data().path("actualEnd"));
+    assertEquals("Booked", updated.data().path("status").asText());
+    service.apply(change);
+    assertEquals(updated.revision(), store.find(h.id()).orElseThrow().revision());
+  }
+
+  @Test
+  void filteredTotalsCoverEveryMatchingPageAndIncludeRegistrationReferences() throws Exception {
+    String marker = "totals-" + UUID.randomUUID();
+    UUID v = vehicle();
+    Row first = null;
+    for (int day = 1; day <= 30; day++) {
+      var d =
+          hire(
+              v,
+              day % 2 == 0 ? "Booked" : "Draft",
+              String.format("2015-01-%02dT10:00:00Z", day),
+              String.format("2015-01-%02dT10:00:00Z", day + 1));
+      d.put("notes", marker);
+      d.put("chargeMinor", day * 1000);
+      Row row = create("hires", d);
+      if (first == null) first = row;
+    }
+    for (int page : List.of(0, 1)) {
+      mvc.perform(
+              get("/api/v1/records/hires")
+                  .with(user("owner").roles("OWNER"))
+                  .param("q", marker)
+                  .param("size", "2")
+                  .param("page", String.valueOf(page)))
+          .andExpect(status().isOk())
+          .andExpect(jsonPath("$.total").value(30))
+          .andExpect(jsonPath("$.items.length()").value(2))
+          .andExpect(jsonPath("$.amountTotalMinor").value(465000))
+          .andExpect(jsonPath("$.references[0].id").value(v.toString()));
+    }
+    mvc.perform(
+            get("/api/v1/records/hires")
+                .with(user("owner").roles("OWNER"))
+                .param("q", marker)
+                .param("status", "Booked")
+                .param("from", "2015-01-02")
+                .param("to", "2015-01-10")
+                .param("vehicleId", v.toString()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.total").value(5))
+        .andExpect(jsonPath("$.amountTotalMinor").value(30000));
+    String registration = store.find(v).orElseThrow().data().path("registration").asText();
+    var p = payment(first.id(), 12345, "Payment");
+    p.put("notes", marker);
+    create("payments", p);
+    var e =
+        data("{\"name\":\"Fuel\",\"status\":\"Due\",\"date\":\"2015-01-02\",\"amountMinor\":6789}");
+    e.put("notes", marker);
+    e.put("vehicleId", v.toString());
+    e.put("categoryId", create("categories", data("{\"name\":\"Total fixture\"}")).id().toString());
+    create("expenses", e);
+    for (String kind : List.of("payments", "expenses")) {
+      mvc.perform(
+              get("/api/v1/records/" + kind)
+                  .with(user("owner").roles("OWNER"))
+                  .param("q", registration))
+          .andExpect(status().isOk())
+          .andExpect(jsonPath("$.total").value(1))
+          .andExpect(jsonPath("$.amountTotalMinor").value(kind.equals("payments") ? 12345 : 6789));
+      mvc.perform(
+              get("/api/v1/records/" + kind)
+                  .with(user("owner").roles("OWNER"))
+                  .param("q", marker)
+                  .param("status", "No matching status"))
+          .andExpect(status().isOk())
+          .andExpect(jsonPath("$.total").value(0))
+          .andExpect(jsonPath("$.amountTotalMinor").value(0));
     }
   }
 

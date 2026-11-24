@@ -64,6 +64,10 @@ The settings singleton UUID is `00000000-0000-4000-8000-000000000001`. It stores
 
 The internal persistence model uses versioned, centrally validated JSONB records with relational indexes, protected financial workflows and a globally serialized writer. This deliberately favors correctness for one owner over concurrent-write throughput. Flyway migrations are forward-only; never edit an applied migration.
 
+List responses additionally include `amountTotalMinor` and `references`. Hires, Payments and Expenses totals use exactly the list filters before pagination, including all matching pages, and are zero for no matches. Hires sum `chargeMinor`; payments/expenses sum `amountMinor` as displayed, not net cash or balances. Related hire/vehicle records are loaded in at most two bounded queries per page. Registration search works in those three registers. No total or day-count database field is introduced.
+
+Recording a new or changed payment defaults only missing actual pickup/return on the linked hire from the plan, with validation and audit evidence in the payment transaction. Explicit actual values and hire status are preserved. Rejected payments do not update the hire; replaying the operation does not repeat the update. Android mirrors this locally with outbox operations. Clients derive planned elapsed days, rounding partial 24-hour days up without changing charges or financial recognition.
+
 ## Code organization (MVC without views)
 
 `ke.carhire.Application` remains the application entrypoint. The REST backend has no server-rendered view layer:
@@ -78,7 +82,7 @@ The internal persistence model uses versioned, centrally validated JSONB records
 | `exceptions` | Structured application exceptions. |
 | `utils` | JSON serialization, conversion and canonical SHA-256 helpers. |
 
-Requests flow from controller to service to repository. Controllers never execute SQL or depend directly on repositories; services do not expose JDBC or servlet objects. Dependencies are constructor-injected and private. `DomainPolicy` centralizes business invariants, while `PortablePackageVerifier` handles bounded ZIP/manifest/reconciliation validation separately from transfer orchestration. The existing JSONB storage, database migrations, routes and wire formats are unchanged.
+Requests flow from controller to service to repository. Controllers never execute SQL or depend directly on repositories; services do not expose JDBC or servlet objects. Dependencies are constructor-injected and private. `DomainPolicy` centralizes business invariants, while `PortablePackageVerifier` handles bounded ZIP/manifest/reconciliation validation separately from transfer orchestration. JSONB storage, database migrations, routes and record-write envelopes are unchanged. List metadata is additive; deploy the updated web and backend together because the web validates the filtered-total field.
 
 Sync intentionally invokes the transactional `RecordService` bean for each operation rather than wrapping an entire batch or self-invoking writes. Accepted changes therefore survive independently rejected operations. Export acknowledgement and its audit evidence are committed atomically. Integration tests guard these boundaries and exercise the HTTP adapters in addition to business workflows.
 

@@ -74,8 +74,20 @@ public class RecordRepository {
     StringBuilder where = new StringBuilder(" WHERE kind=? AND deleted_at IS NULL");
     List<Object> args = new ArrayList<>(List.of(kind));
     if (!query.isBlank()) {
-      where.append(" AND data::text ILIKE ?");
-      args.add("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%");
+      String search =
+          "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
+      where.append(" AND (data::text ILIKE ?");
+      args.add(search);
+      if (Set.of("hires", "expenses").contains(kind)) {
+        where.append(
+            " OR EXISTS (SELECT 1 FROM records vehicle WHERE vehicle.kind='vehicles' AND vehicle.id::text=records.data->>'vehicleId' AND vehicle.data->>'registration' ILIKE ?)");
+        args.add(search);
+      } else if (kind.equals("payments")) {
+        where.append(
+            " OR EXISTS (SELECT 1 FROM records hire JOIN records vehicle ON vehicle.id::text=hire.data->>'vehicleId' AND vehicle.kind='vehicles' WHERE hire.kind='hires' AND hire.id::text=records.data->>'hireId' AND vehicle.data->>'registration' ILIKE ?)");
+        args.add(search);
+      }
+      where.append(")");
     }
     if (!status.isBlank()) {
       where.append(" AND data->>'status'=?");
@@ -93,27 +105,62 @@ public class RecordRepository {
       where.append(" AND COALESCE(data->>'date',left(data->>'plannedStart',10))<=?");
       args.add(to);
     }
-    long total =
-        Objects.requireNonNull(
-            db.queryForObject("SELECT count(*) FROM records" + where, Long.class, args.toArray()));
+    String amountField = kind.equals("hires") ? "chargeMinor" : "amountMinor";
+    boolean financial = Set.of("hires", "payments", "expenses").contains(kind);
+    String sum =
+        financial ? "COALESCE(sum((data->>'" + amountField + "')::numeric),0)" : "0::numeric";
+    Map<String, Object> totals =
+        db.queryForMap(
+            "SELECT count(*) AS total," + sum + " AS amount FROM records" + where, args.toArray());
+    long total = ((Number) totals.get("total")).longValue();
+    long amountTotalMinor = ((java.math.BigDecimal) totals.get("amount")).longValueExact();
     args.add(size);
     args.add((long) page * size);
     String order =
         kind.equals("hires")
             ? " ORDER BY (data->>'plannedStart')::timestamptz,id"
             : " ORDER BY updated_at DESC,id";
-    return Map.of(
-        "items",
+    List<Row> items =
         db.query(
             "SELECT * FROM records" + where + order + " LIMIT ? OFFSET ?",
             this::map,
-            args.toArray()),
+            args.toArray());
+    return Map.of(
+        "items",
+        items,
+        "references",
+        references(items),
+        "amountTotalMinor",
+        amountTotalMinor,
         "total",
         total,
         "page",
         page,
         "size",
         size);
+  }
+
+  private List<Row> references(List<Row> rows) {
+    Map<UUID, Row> result = new LinkedHashMap<>();
+    List<Row> level = rows;
+    for (int depth = 0; depth < 2; depth++) {
+      Set<UUID> ids = new LinkedHashSet<>();
+      for (Row row : level) {
+        if (!Set.of(
+                "payments", "hires", "expenses", "maintenance", "readings", "damages", "reminders")
+            .contains(row.kind())) continue;
+        String field = row.kind().equals("payments") ? "hireId" : "vehicleId";
+        String id = row.data().path(field).asText("");
+        if (!id.isBlank() && !result.containsKey(UUID.fromString(id))) ids.add(UUID.fromString(id));
+      }
+      if (ids.isEmpty()) break;
+      String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
+      level =
+          db.query(
+              "SELECT * FROM records WHERE id IN (" + placeholders + ")", this::map, ids.toArray());
+      level.forEach(row -> result.put(row.id(), row));
+    }
+    return new ArrayList<>(result.values());
   }
 
   public Row save(UUID id, String kind, ObjectNode data, Row old, boolean deleted) {
