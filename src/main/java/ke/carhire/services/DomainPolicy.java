@@ -2,7 +2,9 @@ package ke.carhire.services;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.math.BigDecimal;
 import java.time.*;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import ke.carhire.exceptions.ApiError;
 import ke.carhire.models.*;
@@ -276,11 +278,13 @@ public class DomainPolicy {
           text(h, "actualEnd").isEmpty() ? instant(h, "plannedEnd") : instant(h, "actualEnd");
       if (text(h, "status").equals("Active") && he.isBefore(Instant.now()))
         he = Instant.MAX.minusSeconds(buffer);
-      if (start.isBefore(he.plusSeconds(buffer)) && hs.isBefore(end.plusSeconds(buffer)))
+      if (start.isBefore(he.plusSeconds(buffer)) && hs.isBefore(end.plusSeconds(buffer))) {
+        String summary = hireConflictSummary(h);
         throw new ApiError(
             org.springframework.http.HttpStatus.CONFLICT,
-            "Vehicle has an overlapping hire",
-            Map.of("conflictingId", r.id()));
+            "Vehicle has an overlapping hire: " + summary,
+            Map.of("conflictingHire", summary));
+      }
     }
     for (var r : store.all("maintenance"))
       if (!r.id().equals(exclude)
@@ -291,6 +295,27 @@ public class DomainPolicy {
             org.springframework.http.HttpStatus.CONFLICT,
             "Vehicle has a service window",
             Map.of("conflictingId", r.id()));
+  }
+
+  private static String hireConflictSummary(JsonNode data) {
+    Instant start =
+        instant(data, text(data, "actualStart").isEmpty() ? "plannedStart" : "actualStart");
+    Instant end = instant(data, text(data, "actualEnd").isEmpty() ? "plannedEnd" : "actualEnd");
+    Duration duration = Duration.between(start, end);
+    long days =
+        duration.isNegative() || duration.isZero()
+            ? 0
+            : duration.toDays() + (duration.minusDays(duration.toDays()).isZero() ? 0 : 1);
+    var format =
+        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ROOT).withZone(ReportService.ZONE);
+    return format.format(start)
+        + " - "
+        + format.format(end)
+        + " | Days:"
+        + days
+        + " | "
+        + String.format(
+            Locale.ROOT, "KES %,.2f", BigDecimal.valueOf(data.path("chargeMinor").asLong(), 2));
   }
 
   void payment(UUID id, ObjectNode d, Row old) {
